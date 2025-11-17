@@ -210,13 +210,24 @@ def prepare_args(params):
         elif params.optim == 'sgd':
             optim_param = {'optim': 'sgd', 'lr': params.lr, 
                            'weight_decay': params.weight_decay, 'momentum': params.momentum}
+            # Ajout nesterov si besoin 
+            if hasattr(params, 'nesterov'):
+                optim_param['nesterov'] = params.nesterov
     else:
         raise ValueError('No support optim method {}'.format(params.optim))
         
     if params.scheduler is not None:
+        scheduler_name = params.scheduler.lower()
         if params.scheduler in ['step', 'cos', 'exp']:
             if params.scheduler == 'step':
                 scheduler_param = {'scheduler': 'step', 'step_size': params.step_size, 'gamma': params.gamma}
+    
+            elif scheduler_name == 'linearschedulewithwarmup':
+                scheduler_param = {
+                'method': 'LinearScheduleWithWarmup',
+                'num_warmup_steps': params.num_warmup_steps,
+                'num_training_steps': params.num_training_steps
+            }
         else:
             raise ValueError('No support scheduler method {}'.format(params.scheduler))
     else:

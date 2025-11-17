@@ -1,5 +1,6 @@
-from LibMTL.weighting.abstract_weighting import AbsWeighting
+
 from LibMTL.weighting.EW import EW
+from LibMTL.weighting.abstract_weighting import AbsWeighting
 from LibMTL.weighting.GradNorm import GradNorm
 from LibMTL.weighting.MGDA import MGDA
 from LibMTL.weighting.UW import UW 
@@ -23,7 +24,7 @@ from LibMTL.weighting.MoDo import MoDo
 from LibMTL.weighting.SDMGrad import SDMGrad
 from LibMTL.weighting.UPGrad import UPGrad
 
-__all__ = ['AbsWeighting',
+__all__ = ['AbsWeighting', 
            'EW', 
            'GradNorm', 
            'MGDA',

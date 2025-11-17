@@ -8,6 +8,7 @@ from LibMTL._record import _PerformanceMeter
 from LibMTL.utils import count_parameters, set_param
 import LibMTL.weighting as weighting_method
 import LibMTL.architecture as architecture_method
+import wandb
 
 class Trainer(nn.Module):
     r'''A Multi-Task Learning Trainer.
@@ -273,7 +274,7 @@ class Trainer(nn.Module):
                         self.meter.update(train_preds[task], train_gts[task], task)
 
                 self.optimizer.zero_grad(set_to_none=False)
-                w = self.model.backward(train_losses, **self.kwargs['weight_args'])
+                w = self.model.backward(train_losses, **self.kwargs['weight_args']) # c'est ici que la pondération est appliquéedes tâches a lieu
                 if w is not None:
                     self.batch_weight[:, epoch, batch_index] = w
                 self.optimizer.step()
@@ -286,12 +287,56 @@ class Trainer(nn.Module):
             self.meter.record_time('end')
             self.meter.get_score()
             self.model.train_loss_buffer[:, epoch] = self.meter.loss_item
+
+            
+            ## -------------Ajout perso -------------
+            # Création du dictionnaire de logs : pertes et métriques
+            log_dict = {"epoch": epoch}
+            total_epoch_loss = 0.0
+            for tn, task in enumerate(self.task_name):
+                avg_task_loss = self.meter.loss_item[tn]
+                log_dict[f"train/{task}_loss"] = avg_task_loss
+                
+                # On ajoute à la loss totale (somme simple)
+                total_epoch_loss += avg_task_loss
+                
+                #Ajouter les prints dans notebook 
+                metric_names = self.meter.task_dict[task]['metrics']
+                metric_values = self.meter.results[task]
+                for m_name, m_val in zip(metric_names, metric_values):
+                    log_dict[f"train/{task}_{m_name}"] = m_val
+
+                
+                
+            log_dict["train/total_loss"] = total_epoch_loss
+            wandb.log(log_dict)
+            ## ------------Fin ajout perso-------------
+            
             self.meter.display(epoch=epoch, mode='train')
             self.meter.reinit()
             
             if val_dataloaders is not None:
                 self.meter.has_val = True
                 val_improvement = self.test(val_dataloaders, epoch, mode='val', return_improvement=True)
+                ##-------------Ajout perso -------------
+                total_val_loss = 0.0
+                for tn, task in enumerate(self.task_name):
+                    # Loss
+                    v_loss = self.meter.loss_item[tn]
+                    log_dict[f"val/{task}_loss"] = v_loss
+                    total_val_loss += v_loss
+                    
+                    # Métriques (Acc, Dice...)
+                    metric_names = self.meter.task_dict[task]['metrics']
+                    metric_values = self.meter.results[task]
+                    for m_name, m_val in zip(metric_names, metric_values):
+                        log_dict[f"val/{task}_{m_name}"] = m_val
+                
+                log_dict["val/total_loss"] = total_val_loss
+                wandb.log(log_dict)
+                ##------------Fin ajout perso-------------
+                
+                
             self.test(test_dataloaders, epoch, mode='test')
             if self.scheduler is not None:
                 if self.scheduler_param['scheduler'] == 'reduce' and val_dataloaders is not None:
