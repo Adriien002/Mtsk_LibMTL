@@ -11,12 +11,6 @@ import monai
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 
-# Configuration
-SEG_LABEL_COLS = ['any', 'epidural', 'intraparenchymal', 'intraventricular', 'subarachnoid', 'subdural']
-SEG_DIR = '/home/tibia/Projet_Hemorragie/Seg_hemorragie/split_MONAI'
-CLASSIFICATION_DATA_DIR = '/home/tibia/Projet_Hemorragie/MBH_label_case'
-SAVE_DIR = "/home/tibia/Projet_Hemorragie/MBH_multitask_pos_cases"
-
 
 import os
 from pathlib import Path
@@ -122,7 +116,9 @@ def get_classification_transform(mode='train'):
                 keys=["image"],
                 a_min=-10,a_max=140, 
                 b_min=0.0, b_max=1.0, 
-                clip=True) ]
+                clip=True) ,
+            T.RandSpatialCropd(keys=["image"], roi_size=(96, 96, 96), random_size=False)]
+            
             
     if mode == 'train':
         augmentation_transforms = [
@@ -386,51 +382,6 @@ task_dict = {
         'weight': [1.0]
     }
 }
-
-
-
-# ======================
-# MODÈLE MTL
-# ======================
-
-class HemorrhageMTLModel(LibMTL.model.MTLModel):
-    def __init__(self, task_dict, **kwargs):
-        super(HemorrhageMTLModel, self).__init__(task_dict, **kwargs)
-        
-        # Encodeur CNN commun (comme dans votre approche actuelle)
-        self.shared_encoder = monai.networks.nets.DenseNet121(
-            spatial_dims=3,
-            in_channels=1,
-            out_channels=512  # Features de sortie
-        )
-        
-        # Tête pour la segmentation
-        self.segmentation_head = nn.Sequential(
-            nn.Conv3d(512, 256, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv3d(256, 128, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv3d(128, len(SEG_LABEL_COLS), 1)  # Classes de segmentation
-        )
-        
-        # Tête pour la classification
-        self.classification_head = nn.Sequential(
-            nn.AdaptiveAvgPool3d(1),
-            nn.Flatten(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(256, len(SEG_LABEL_COLS))  # Classes de classification
-        )
-    
-    def forward(self, inputs, task_name):
-        # Passage par l'encodeur commun
-        features = self.shared_encoder(inputs)
-        
-        if task_name == 'segmentation':
-            return self.segmentation_head(features)
-        elif task_name == 'classification':
-            return self.classification_head(features)
 
 # ======================
 #Def modèle Trainer LibMTL
@@ -765,7 +716,7 @@ wandb.init(
 
 # Paramètres optim & scheduler
 optim_param = {
-    'method': 'SGD', 
+    'optim': 'sgd', 
     'lr': 1e-3, 
     'weight_decay': 3e-5,  # 0.00003 est égal à 3e-5
     'momentum': 0.99, 
@@ -773,29 +724,60 @@ optim_param = {
 }
 
 scheduler_param = {
-    'method': 'LinearScheduleWithWarmup',  # Correspond à get_linear_schedule_with_warmup
+    'scheduler': 'linearschedulewithwarmup',  # Correspond à get_linear_schedule_with_warmup
     'num_warmup_steps': 0, 
    }
+# --- 2. DÉFINITION MANUELLE DE KWARGS (Le plus important) ---
+
+# Arguments spécifiques à l'architecture (Exemple pour un U-Net 3D ou une archi complexe)
+arch_args = {
+    # Si vous utilisez CGC, PLE, ou MMoE, vous devez spécifier la taille d'image et le nombre d'experts
+    # 'img_size': (96, 96, 96), 
+    # 'num_experts': [4, 4, 4], 
+    
+    # Si votre encodeur ResNet a des arguments spécifiques, mettez-les ici
+    # Ex: 'channels': 3 # Si vous devez le passer à l'initialisation de l'encodeur
+}
+
+# Arguments spécifiques à la méthode de pondération (Exemple pour 'EW' qui n'a besoin de rien)
+weight_args = {
+    # Pour EW (Equal Weighting), c'est souvent vide.
+}
+
+# Si vous utilisiez DWA, vous définiriez T :
+# weight_args = {'T': 1.0} 
+
+# Si vous utilisiez GradNorm, vous définiriez alpha :
+# weight_args = {'alpha': 0.1}
+
+# --- 3. CONSOLIDER KWARGS (Optionnel mais propre) ---
+
+# Crée le dictionnaire kwargs global
+kwargs = {
+    'arch_args': arch_args,
+    'weight_args': weight_args
+}
 
 # 3️ Méthodes multitâches
 from LibMTL.architecture import HPS
-from LibMTL.weighting import GradNorm
+from LibMTL.weighting import GradNorm,EW
 
 # 4️ Instanciation du Trainer
 from LibMTL import Trainer
 
 hemorrhage_trainer = Trainer(
     task_dict=task_dict,
-    weighting=None,
-    architecture=HPS,
+    weighting= 'EW',
+    architecture='HPS',
     encoder_class=HemorrhageEncoder,
     decoders=decoders,
     rep_grad=False,
     multi_input=True,
     optim_param=optim_param,
     scheduler_param=scheduler_param,
-    device='cuda'
+    #device='cuda',
+    **kwargs
 )
 
-# 5️⃣ Entraînement
-hemorrhage_trainer.train(train_dataloaders, num_epochs=100)
+# 5️ Entraînement
+hemorrhage_trainer.train(train_dataloaders, num_epochs=1000 , val_dataloaders=val_dataloaders, save_dir=SAVE_DIR)

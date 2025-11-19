@@ -221,13 +221,15 @@ def prepare_args(params):
         if params.scheduler in ['step', 'cos', 'exp']:
             if params.scheduler == 'step':
                 scheduler_param = {'scheduler': 'step', 'step_size': params.step_size, 'gamma': params.gamma}
-    
+    #--------- Ajout perso ---------#
             elif scheduler_name == 'linearschedulewithwarmup':
                 scheduler_param = {
-                'method': 'LinearScheduleWithWarmup',
-                'num_warmup_steps': params.num_warmup_steps,
-                'num_training_steps': params.num_training_steps
-            }
+                    
+                    'scheduler': 'linearschedulewithwarmup',
+                    'num_warmup_steps': params.num_warmup_steps,
+                    'num_training_steps': params.num_training_steps
+                }
+    #-----------Fin Ajout perso-------------------#
         else:
             raise ValueError('No support scheduler method {}'.format(params.scheduler))
     else:

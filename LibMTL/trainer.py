@@ -9,6 +9,7 @@ from LibMTL.utils import count_parameters, set_param
 import LibMTL.weighting as weighting_method
 import LibMTL.architecture as architecture_method
 import wandb
+from monai.inferers import sliding_window_inference
 
 class Trainer(nn.Module):
     r'''A Multi-Task Learning Trainer.
@@ -227,8 +228,8 @@ class Trainer(nn.Module):
         train_func(train_dataloaders, test_dataloaders, epochs, 
             val_dataloaders, return_weight, **kwargs)
 
-    def train_singlelevel(self, train_dataloaders, test_dataloaders, epochs, 
-              val_dataloaders=None, return_weight=False):
+    def train_singlelevel(self, train_dataloaders, epochs, 
+              val_dataloaders=None, return_weight=False, test_dataloaders= None):  # On rend le test_dataloaders optionnel
         r'''The training process of multi-task learning.
 
         Args:
@@ -301,10 +302,10 @@ class Trainer(nn.Module):
                 total_epoch_loss += avg_task_loss
                 
                 #Ajouter les prints dans notebook 
-                metric_names = self.meter.task_dict[task]['metrics']
-                metric_values = self.meter.results[task]
-                for m_name, m_val in zip(metric_names, metric_values):
-                    log_dict[f"train/{task}_{m_name}"] = m_val
+                # metric_names = self.meter.task_dict[task]['metrics']
+                # metric_values = self.meter.results[task]
+                # for m_name, m_val in zip(metric_names, metric_values):
+                #     log_dict[f"train/{task}_{m_name}"] = m_val
 
                 
                 
@@ -335,8 +336,10 @@ class Trainer(nn.Module):
                 log_dict["val/total_loss"] = total_val_loss
                 wandb.log(log_dict)
                 ##------------Fin ajout perso-------------
-                
-                
+         
+        ## ------------Ajout perso -------------       
+        if test_dataloaders is not None:   
+            ##------- Fin ajout perso-------------  
             self.test(test_dataloaders, epoch, mode='test')
             if self.scheduler is not None:
                 if self.scheduler_param['scheduler'] == 'reduce' and val_dataloaders is not None:
@@ -376,8 +379,21 @@ class Trainer(nn.Module):
                 for tn, task in enumerate(self.task_name):
                     for batch_index in range(test_batch[tn]):
                         test_input, test_gt = self._process_data(test_loader[task])
-                        test_pred = self.model(test_input, task)
-                        test_pred = test_pred[task]
+                        ## ---Ajout perso : inference par sliding window ---
+                        if task == "segmentation":
+                            test_pred = sliding_window_inference(
+                                inputs=test_input,
+                                roi_size=(96, 96, 96),
+                                sw_batch_size=2,
+                                predictor=lambda x: self.model(x, task=task)[task],
+                                overlap=0.25,
+                            )
+                        else:
+                            
+                            test_pred = self.model(test_input, task)
+                            test_pred = test_pred[task]
+                        ## --------Fin ajout perso ----------
+                        
                         test_pred = self.process_preds(test_pred)
                         test_loss = self._compute_loss(test_pred, test_gt, task)
                         self.meter.update(test_pred, test_gt, task)
