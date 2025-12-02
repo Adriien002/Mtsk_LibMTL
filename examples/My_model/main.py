@@ -1,3 +1,7 @@
+
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 import LibMTL
 import torch
 import torch.nn as nn
@@ -5,6 +9,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from LibMTL import Trainer
+
 from LibMTL.loss import *
 from LibMTL.metrics import *
 import monai
@@ -12,7 +17,7 @@ from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 
 
-import os
+
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -23,9 +28,12 @@ CLASSIFICATION_DATA_DIR = '/home/tibia/Projet_Hemorragie/MBH_label_case'
 SAVE_DIR = "/home/tibia/Projet_Hemorragie/MBH_multitask_libMTL2/saved_models"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-set.device('cuda' if torch.cuda.is_available() else 'cpu')
-#on utilise le GPU 1 
-set.cuda_device(1)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+
+
 # ======================
 # DATA PREPARATION
 # ======================
@@ -602,23 +610,25 @@ arch_args = {
 }
 
 # Arguments spécifiques à la méthode de pondération (Exemple pour 'EW' qui n'a besoin de rien)
-weight_args = {
-    # Pour EW (Equal Weighting), c'est souvent vide.
-}
+# weight_args = {
+#     # Pour EW (Equal Weighting), c'est souvent vide.
+# }
 
 # Si vous utilisiez DWA, vous définiriez T :
 # weight_args = {'T': 1.0} 
 
 # Si vous utilisiez GradNorm, vous définiriez alpha :
-# weight_args = {'alpha': 0.1}
+weight_args = {'alpha': 0.1}
 
 # --- 3. CONSOLIDER KWARGS (Optionnel mais propre) ---
 
 # Crée le dictionnaire kwargs global
 kwargs = {
     'arch_args': arch_args,
-    'weight_args': weight_args
+    'weight_args': weight_args,
+ 
 }
+
 
 
 
@@ -627,7 +637,7 @@ import wandb
 config_l = dict(
     sharing_type="hard",   # "soft" ou "fine_tune"
     model="BasicUNetWithClassification",
-    loss_weighting="none",
+    loss_weighting="GradNorm",
     dataset_size="balanced",  # "full" ou "balanced" ou "optimized"
     batch_size=2,
     learning_rate=1e-3,
@@ -644,7 +654,7 @@ tags = [f"{k}:{v}" for k, v in config_l.items() if k in ["sharing_type", "optimi
 # Au lieu de : wandb_logger = WandbLogger(...)
 wandb.init(
     project="hemorrhage_multitask_test",
-    group="noponderation",
+    group="gradnorm",
     tags=tags,
     config=config_l,
     name="multitask_unet3d_libMTL"
@@ -662,12 +672,12 @@ from LibMTL.trainer import Trainer
 
 hemorrhage_trainer = Trainer(
     task_dict=task_dict,
-    weighting= 'EW',
+    weighting= 'GradNorm',
     architecture='Unet_hemo',
     #save_path=SAVE_DIR, à ajouter 
     encoder_class=HemorrhageEncoder,
     decoders=decoders,
-    rep_grad=False,
+    rep_grad=True,
     multi_input=True,
     optim_param=optim_param,
     scheduler_param=scheduler_param,
