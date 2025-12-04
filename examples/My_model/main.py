@@ -25,7 +25,7 @@ import pandas as pd
 SEG_LABEL_COLS = ['any', 'epidural', 'intraparenchymal', 'intraventricular', 'subarachnoid', 'subdural']
 SEG_DIR = '/home/tibia/Projet_Hemorragie/Seg_hemorragie/split_MONAI'
 CLASSIFICATION_DATA_DIR = '/home/tibia/Projet_Hemorragie/MBH_label_case'
-SAVE_DIR = "/home/tibia/Projet_Hemorragie/MBH_multitask_libMTL2/saved_models"
+SAVE_DIR = "/home/tibia/Projet_Hemorragie/MBH_multitask_libMTL2/saved_models_2"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 
@@ -208,7 +208,7 @@ seg_train_loader = DataLoader(
 
 cls_train_loader = DataLoader(
         cls_train_dataset, 
-        batch_size=2, 
+        batch_size=4, 
         shuffle=True, 
         num_workers=8,
         persistent_workers=True,
@@ -324,15 +324,14 @@ class DiceMetricAdapter(AbsMetric):
         self.num_classes = num_classes
         self.include_background = include_background
         
-        # On utilise DiceHelper comme "calculateur" ponctuel.
-        # On lui demande de NE PAS faire de réduction (reduction="none")
-        # car on veut stocker les scores bruts (Batch, Classes).
+        # On utilise DiceHelper 
+        # NE PAS faire de réduction (reduction="none") car on veut scores bruts (Batch, Classes).
         self.dice_helper = DiceHelper(
             include_background=include_background,
             num_classes=num_classes,
             reduction=MetricReduction.NONE,
-            ignore_empty=True,  # Important : ignore les cas où le GT est vide
-            apply_argmax=False  # On le fera nous-mêmes dans update_fun
+            ignore_empty=True,  # igonrer cas vides
+            apply_argmax=False  # Fais dans update_fun
         )
 
     def update_fun(self, pred, gt):
@@ -344,11 +343,11 @@ class DiceMetricAdapter(AbsMetric):
             gt (torch.Tensor): Vérité terrain (labels) de forme (B, 1, H, W, D)
         """
         # 1. Convertir les logits en labels
-        # DiceHelper attend des labels, pas des logits
+        # DiceHelper attend des labels
         pred_labels = torch.argmax(pred, dim=1, keepdim=True)
         
         # 2. Calculer les scores Dice pour ce batch
-        # Le résultat est un tenseur de (B, num_classes_calculées)
+        # resultat de la forme  (B, num_classes_calculées)
         # ex: (B, 5) si num_classes=6 et include_background=False
         batch_dice_scores,_ = self.dice_helper(pred_labels, gt)
         
@@ -373,12 +372,11 @@ class DiceMetricAdapter(AbsMetric):
         
         # 2. Calculer la moyenne sur la dimension des batches (dim=0)
         # On utilise nanmean pour ignorer les NaN (cas des GT vides)
-        # C'est la façon correcte d'agréger le Dice.
+        
         mean_scores_per_class = torch.nanmean(all_scores, dim=0)
         #mean_gloabal = torch.nanmean(mean_scores_per_class)
         
-        # `score_fun` est censé retourner une "liste", mais un tenseur
-        # est plus utile. On retourne la moyenne par classe.
+        #  On retourne la moyenne par classe.
         return mean_scores_per_class.tolist()
     
     # La méthode reinit() est héritée de AbsMetric et fonctionne parfaitement
@@ -462,7 +460,7 @@ class HemorrhageEncoder(nn.Module):
         x1 = self.down_1(x0)
         x2 = self.down_2(x1)
         x3 = self.down_3(x2)
-        x4 = self.down_4(x3)  # C'est le bottleneck (la représentation partagée)
+        x4 = self.down_4(x3)  # bottleneck (la représentation partagée)
         
         return [x4, x3, x2, x1, x0]
 
@@ -515,7 +513,7 @@ class ClassificationDecoder(nn.Module):
     """
     def __init__(
         self,
-        in_features: int,  # Doit correspondre à features[4] de l'encodeur
+        in_features: int,  # Doit correspondre à features[0] de l'encodeur
         num_cls_classes: int = 6,
     ):
         super().__init__()
@@ -540,7 +538,7 @@ class ClassificationDecoder(nn.Module):
         # On ne prend que le bottleneck (le premier élément de la liste)
         x4 = enc_out[0]
         
-        # Toute la logique d'agrégation de patches a disparu !
+        # ajouter logique aggregaton après
         # On passe directement les features à la tête de classification.
         return self.cls_head(x4)
 
@@ -548,14 +546,14 @@ class ClassificationDecoder(nn.Module):
 # 3. ASSEMBLAGE FINAL POUR LibMTL
 # ========================================================================
 
-# Définis tes paramètres
+
 task_name = ["segmentation", "classification"]
 features = (32, 32, 64, 128, 256, 32)
 
-# Crée une instance de l'encodeur partagé
+# instance de l'encodeur partagé
 encoder = HemorrhageEncoder(features=features)
 
-# Crée un dictionnaire de décodeurs
+# dictionnaire de décodeurs
 decoders = nn.ModuleDict({
     'segmentation': SegmentationDecoder(
         out_channels=6, # 6 classes de segmentation
@@ -578,14 +576,14 @@ decoders = nn.ModuleDict({
 optim_param = {
     'optim': 'sgd', 
     'lr': 1e-3, 
-    'weight_decay': 3e-5,  # 0.00003 est égal à 3e-5
+    'weight_decay': 3e-5,  # 0.00003 
     'momentum': 0.99, 
     'nesterov': True
 }
 
 lengths = [len(loader) for loader in train_dataloaders.values()]
 
-# 2. Trouver le dataloader le plus long (c'est sur lui que LibMTL se cale)
+# 2. Trouver le dataloader le plus long (c'est sur lui que LibMTL se cale) : classif ici
 steps_per_epoch = max(lengths)
 
 
@@ -601,24 +599,24 @@ scheduler_param = {
 # Arguments spécifiques à l'architecture (Exemple pour un U-Net 3D ou une archi complexe)
 arch_args = {
     
-    # Si vous utilisez CGC, PLE, ou MMoE, vous devez spécifier la taille d'image et le nombre d'experts
+    # Si CGC, PLE, ou MMoE, il faut spécifier la taille d'image et le nombre d'experts
     # 'img_size': (96, 96, 96), 
     # 'num_experts': [4, 4, 4], 
     
-    # Si votre encodeur ResNet a des arguments spécifiques, mettez-les ici
+    # mettre arguments spécifique resnet au besoin
     # Ex: 'channels': 3 # Si vous devez le passer à l'initialisation de l'encodeur
 }
 
 # Arguments spécifiques à la méthode de pondération (Exemple pour 'EW' qui n'a besoin de rien)
-# weight_args = {
-#     # Pour EW (Equal Weighting), c'est souvent vide.
-# }
+weight_args = {
+    # Pour EW (Equal Weighting), c'est souvent vide.
+}
 
-# Si vous utilisiez DWA, vous définiriez T :
+# Si  DWA, définir T :
 # weight_args = {'T': 1.0} 
 
-# Si vous utilisiez GradNorm, vous définiriez alpha :
-weight_args = {'alpha': 0.1}
+# Si  GradNorm,définir alpha :
+#weight_args = {'alpha': 0.1}
 
 # --- 3. CONSOLIDER KWARGS (Optionnel mais propre) ---
 
@@ -637,7 +635,7 @@ import wandb
 config_l = dict(
     sharing_type="hard",   # "soft" ou "fine_tune"
     model="BasicUNetWithClassification",
-    loss_weighting="GradNorm",
+    loss_weighting="UW",
     dataset_size="balanced",  # "full" ou "balanced" ou "optimized"
     batch_size=2,
     learning_rate=1e-3,
@@ -654,10 +652,10 @@ tags = [f"{k}:{v}" for k, v in config_l.items() if k in ["sharing_type", "optimi
 # Au lieu de : wandb_logger = WandbLogger(...)
 wandb.init(
     project="hemorrhage_multitask_test",
-    group="gradnorm",
+    group="UW",
     tags=tags,
     config=config_l,
-    name="multitask_unet3d_libMTL"
+    name="multitask_unet3d_libMTL_UW"
 )
 
 
@@ -672,12 +670,12 @@ from LibMTL.trainer import Trainer
 
 hemorrhage_trainer = Trainer(
     task_dict=task_dict,
-    weighting= 'GradNorm',
+    weighting= 'UW', 
     architecture='Unet_hemo',
     #save_path=SAVE_DIR, à ajouter 
     encoder_class=HemorrhageEncoder,
     decoders=decoders,
-    rep_grad=True,
+    rep_grad=False,
     multi_input=True,
     optim_param=optim_param,
     scheduler_param=scheduler_param,
