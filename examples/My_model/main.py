@@ -24,8 +24,9 @@ import pandas as pd
 
 SEG_LABEL_COLS = ['any', 'epidural', 'intraparenchymal', 'intraventricular', 'subarachnoid', 'subdural']
 SEG_DIR = '/home/tibia/Projet_Hemorragie/Seg_hemorragie/split_MONAI'
+SEG_DIR_2 = Path('/home/tibia/Projet_Hemorragie/Seg_hemorragie/splitv2/ich_seg_v4_adrien/split_MONAI_Adapted')
 CLASSIFICATION_DATA_DIR = '/home/tibia/Projet_Hemorragie/MBH_label_case'
-SAVE_DIR = "/home/tibia/Projet_Hemorragie/MBH_multitask_libMTL2/saved_models_2"
+SAVE_DIR = "/home/tibia/Projet_Hemorragie/MBH_multitask_libMTL_test_BE"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 
@@ -54,6 +55,25 @@ def get_segmentation_data(split="train"):
         })
         
     return data
+
+def get_segmentation_data_2(split="train"):
+    img_dir = Path(SEG_DIR_2) / split / "img"
+    seg_dir = Path(SEG_DIR_2) / split / "seg"
+    
+    images = sorted(img_dir.glob("*.nii.gz"))
+    labels = sorted(seg_dir.glob("*.nii.gz"))
+    
+    assert len(images) == len(labels), "Mismatch between image and label counts"
+
+    data = []
+    for img, lbl in zip(images, labels):
+        data.append({
+            "image": str(img),
+            "label": str(lbl),
+        })
+        
+    return data
+
 
 
 def get_classification_data(split="train"):
@@ -170,7 +190,8 @@ def get_classification_transform(mode='train'):
 # Préparation dataloaders
 from monai.data import DataLoader, PersistentDataset
 seg_train_data=get_segmentation_data("train")
-cls_train_data=get_classification_data("train")
+# cls_train_data=get_classification_data("train")
+seg_ICH_train_data=get_segmentation_data_2("train")
 
 seg_train_dataset = PersistentDataset(
         seg_train_data, 
@@ -178,23 +199,40 @@ seg_train_dataset = PersistentDataset(
         cache_dir=os.path.join(SAVE_DIR, "cache_train")
     )
 
-cls_train_dataset = PersistentDataset(
-        cls_train_data,
-        transform=get_classification_transform('train'),
-        cache_dir=os.path.join(SAVE_DIR, "cache_train"))
+seg_ICH_train_dataset = PersistentDataset(
+        seg_ICH_train_data, 
+        transform=get_segmentation_transform('train'),
+        cache_dir=os.path.join(SAVE_DIR, "cache_ICH_train")
+    )
+
+
+# cls_train_dataset = PersistentDataset(
+#         cls_train_data,
+#         transform=get_classification_transform('train'),
+#         cache_dir=os.path.join(SAVE_DIR, "cache_train"))
     
 #Val dataset
 seg_val_data=get_segmentation_data("val")
-cls_val_data=get_classification_data("val")
+# cls_val_data=get_classification_data("val")
+seg_ICH_val_data=get_segmentation_data_2("val")
+
+
 seg_val_dataset = PersistentDataset(
         seg_val_data, 
         transform=get_segmentation_transform('val'),    
         cache_dir=os.path.join(SAVE_DIR, "cache_val")
     )   
-cls_val_dataset = PersistentDataset(
-        cls_val_data,
-        transform=get_classification_transform('val'),
-        cache_dir=os.path.join(SAVE_DIR, "cache_val"))      
+seg_ICH_val_dataset = PersistentDataset(
+        seg_ICH_val_data, 
+        transform=get_segmentation_transform('val'),    
+        cache_dir=os.path.join(SAVE_DIR, "cache_ICH_val")
+        )
+
+
+# cls_val_dataset = PersistentDataset(
+#         cls_val_data,
+#         transform=get_classification_transform('val'),
+#         cache_dir=os.path.join(SAVE_DIR, "cache_val"))      
 
 
 # DataLoaders
@@ -206,17 +244,28 @@ seg_train_loader = DataLoader(
         persistent_workers=True,
 )
 
-cls_train_loader = DataLoader(
-        cls_train_dataset, 
-        batch_size=4, 
+seg_ICH_train_laoder = DataLoader(
+        seg_ICH_train_dataset, 
+        batch_size=2, 
         shuffle=True, 
         num_workers=8,
         persistent_workers=True,
 )
+
+
+# cls_train_loader = DataLoader(
+#         cls_train_dataset, 
+#         batch_size=4, 
+#         shuffle=True, 
+#         num_workers=8,
+#         persistent_workers=True,
+# )
   
-train_dataloaders = {'segmentation': seg_train_loader,
-                     'classification': cls_train_loader
-                     }
+# train_dataloaders = {'segmentation': seg_train_loader,
+#                      'classification': cls_train_loader
+#                      }
+train_dataloaders= {'segmentation' : seg_train_loader,
+                     'segmentation_ICH' : seg_ICH_train_laoder}
 
 
 seg_val_loader = DataLoader(
@@ -227,18 +276,31 @@ seg_val_loader = DataLoader(
         persistent_workers=True,
 )   
 
-cls_val_loader = DataLoader(  
-        cls_val_dataset, 
+seg_ICH_val_laoder = DataLoader(
+        seg_ICH_val_dataset, 
         batch_size=1, 
-        shuffle=False, 
+        shuffle=False,
         num_workers=8,
-        persistent_workers=True,
+        persistent_workers=True,          
 )
+
+
+
+# cls_val_loader = DataLoader(  
+#         cls_val_dataset, 
+#         batch_size=1, 
+#         shuffle=False, 
+#         num_workers=8,
+#         persistent_workers=True,
+# )
+# val_dataloaders = {'segmentation': seg_val_loader,
+#                    'classification': cls_val_loader
+#                    }
+
+
 val_dataloaders = {'segmentation': seg_val_loader,
-                   'classification': cls_val_loader
+                   'segmentation_ICH': seg_ICH_val_laoder
                    }
-
-
 # ======================
 # MÉTRIQUES PERSONNALISÉES
 # ======================
@@ -393,20 +455,35 @@ print("Noms des métriques de classification :", metric_names_list)
 print("Noms des métriques de segmentation   :", seg_metric_names_list)
 # dictionnaire de tâches
 
+# task_dict = {
+#     'classification': {
+#         'loss_fn': ClassificationLossWrapper(),
+#         'metrics_fn': MultiLabelAUCMetric(num_labels=6),
+#         'metrics': ['val_auc_class_0', 'val_auc_class_1', 'val_auc_class_2', 
+#                    'val_auc_class_3', 'val_auc_class_4', 'val_auc_class_5', 
+#                    'val_auc_mean'],
+#         'weight': [1.0]
+#     },
+#     'segmentation': {
+#         'loss_fn': SegmentationLossWrapper(),
+#         'metrics_fn': DiceMetricAdapter(num_classes=6, include_background=False),
+#         'metrics': ['dice_c1', 'dice_c2', 'dice_c3', 'dice_c4', 'dice_c5'],
+#         'weight': [1.0] * 5
+#     }
+# }
+ # POUR NOUVELLE TACHE SEGMENTATION ICH
 task_dict = {
-    'classification': {
-        'loss_fn': ClassificationLossWrapper(),
-        'metrics_fn': MultiLabelAUCMetric(num_labels=6),
-        'metrics': ['val_auc_class_0', 'val_auc_class_1', 'val_auc_class_2', 
-                   'val_auc_class_3', 'val_auc_class_4', 'val_auc_class_5', 
-                   'val_auc_mean'],
-        'weight': [1.0]
-    },
     'segmentation': {
         'loss_fn': SegmentationLossWrapper(),
         'metrics_fn': DiceMetricAdapter(num_classes=6, include_background=False),
         'metrics': ['dice_c1', 'dice_c2', 'dice_c3', 'dice_c4', 'dice_c5'],
         'weight': [1.0] * 5
+    },
+    'segmentation_ICH': {
+        'loss_fn': SegmentationLossWrapper(),
+        'metrics_fn': DiceMetricAdapter(num_classes=4, include_background=False),
+        'metrics': ['dice_1', 'dice_2', 'dice_3'],
+        'weight': [1.0] * 3
     }
 }
 # self.task_num = len(task_dict)
@@ -434,7 +511,7 @@ class HemorrhageEncoder(nn.Module):
         spatial_dims: int = 3,
         in_channels: int = 1,
         features: Sequence[int] = (32, 32, 64, 128, 256, 32),
-        act: str | tuple = ("LeakyReLU", {"negative_slope": 0.1, "inplace": True}),
+        act: str | tuple = ("LeakyReLU", {"negative_slope": 0.1, "inplace": True}), # False gradnorm #True autre
         norm: str | tuple = ("instance", {"affine": True}),
         bias: bool = True,
         dropout: float | tuple = 0.0,
@@ -478,6 +555,44 @@ class SegmentationDecoder(nn.Module):
         spatial_dims: int = 3,
         out_channels: int = 6,
         features: Sequence[int] = (32, 32, 64, 128, 256, 32),
+        act: str | tuple = ("LeakyReLU", {"negative_slope": 0.1, "inplace": True}), #False gradnorm #True autre
+        norm: str | tuple = ("instance", {"affine": True}),
+        bias: bool = True,
+        dropout: float | tuple = 0.0,
+        upsample: str = "deconv",
+    ):
+        super().__init__()
+        
+        fea = nn.Parameter(torch.tensor(features), requires_grad=False)
+        
+        self.upcat_4 = UpCat(spatial_dims, fea[4], fea[3], fea[3], act, norm, bias, dropout, upsample)
+        self.upcat_3 = UpCat(spatial_dims, fea[3], fea[2], fea[2], act, norm, bias, dropout, upsample)
+        self.upcat_2 = UpCat(spatial_dims, fea[2], fea[1], fea[1], act, norm, bias, dropout, upsample)
+        self.upcat_1 = UpCat(spatial_dims, fea[1], fea[0], fea[5], act, norm, bias, dropout, upsample, halves=False)
+        self.final_conv = nn.Conv3d(fea[5], out_channels, kernel_size=1)
+
+    def forward(self, enc_out: list[torch.Tensor]) -> torch.Tensor:
+        # On récupère les tenseurs de la liste fournie par l'encodeur
+        x4, x3, x2, x1, x0 = enc_out
+        
+        u4 = self.upcat_4(x4, x3)
+        u3 = self.upcat_3(u4, x2)
+        u2 = self.upcat_2(u3, x1)
+        u1 = self.upcat_1(u2, x0)
+        
+        return self.final_conv(u1)
+    
+    
+class Segmentation_ICH_Decoder(nn.Module):
+    """
+    Le décodeur pour la tâche de segmentation.
+    Il prend la liste de features de l'encodeur et reconstruit le masque.
+    """
+    def __init__(
+        self,
+        spatial_dims: int = 3,
+        out_channels: int = 4,
+        features: Sequence[int] = (32, 32, 64, 128, 256, 32),
         act: str | tuple = ("LeakyReLU", {"negative_slope": 0.1, "inplace": True}),
         norm: str | tuple = ("instance", {"affine": True}),
         bias: bool = True,
@@ -504,6 +619,7 @@ class SegmentationDecoder(nn.Module):
         u1 = self.upcat_1(u2, x0)
         
         return self.final_conv(u1)
+    
 
 class ClassificationDecoder(nn.Module):
     """
@@ -524,11 +640,11 @@ class ClassificationDecoder(nn.Module):
             nn.Flatten(),
             nn.Linear(in_features * 4 * 4 * 4, 512),
             nn.LayerNorm(512),
-            nn.LeakyReLU(inplace=True),
+            nn.LeakyReLU(inplace=True), #False gradnorm #True autre
             nn.Dropout(0.5),
             nn.Linear(512, 256),
             nn.LayerNorm(256),
-            nn.LeakyReLU(inplace=True),
+            nn.LeakyReLU(inplace=True), #False gradnorm #True autre
             nn.Dropout(0.3),
             nn.Linear(256, num_cls_classes)
         )
@@ -554,16 +670,26 @@ features = (32, 32, 64, 128, 256, 32)
 encoder = HemorrhageEncoder(features=features)
 
 # dictionnaire de décodeurs
+# decoders = nn.ModuleDict({
+#     'segmentation': SegmentationDecoder(
+#         out_channels=6, # 6 classes de segmentation
+#         features=features
+#     ),
+#     'classification': ClassificationDecoder(
+#         in_features=features[4], # La taille du bottleneck (256)
+#         num_cls_classes=6 # 6 classes de classification
+#     )
+# })
+
 decoders = nn.ModuleDict({
     'segmentation': SegmentationDecoder(
         out_channels=6, # 6 classes de segmentation
         features=features
-    ),
-    'classification': ClassificationDecoder(
-        in_features=features[4], # La taille du bottleneck (256)
-        num_cls_classes=6 # 6 classes de classification
-    )
-})
+    ).to(device),
+    'segmentation_ICH': SegmentationDecoder(
+        out_channels=4, # 4 classes de segmentation
+        features=features
+    ).to(device)})
 
 
 
@@ -613,10 +739,10 @@ weight_args = {
 }
 
 # Si  DWA, définir T :
-# weight_args = {'T': 1.0} 
+#weight_args = {'T': 2.0} 
 
 # Si  GradNorm,définir alpha :
-#weight_args = {'alpha': 0.1}
+# weight_args = {'alpha': 0.1}
 
 # --- 3. CONSOLIDER KWARGS (Optionnel mais propre) ---
 
@@ -635,8 +761,8 @@ import wandb
 config_l = dict(
     sharing_type="hard",   # "soft" ou "fine_tune"
     model="BasicUNetWithClassification",
-    loss_weighting="UW",
-    dataset_size="balanced",  # "full" ou "balanced" ou "optimized"
+    loss_weighting="EW",
+    dataset_size="full",  # "full" ou "balanced" ou "optimized"
     batch_size=2,
     learning_rate=1e-3,
     optimizer="sgd",
@@ -651,11 +777,11 @@ tags = [f"{k}:{v}" for k, v in config_l.items() if k in ["sharing_type", "optimi
 # : Initialisation manuelle de wandb
 # Au lieu de : wandb_logger = WandbLogger(...)
 wandb.init(
-    project="hemorrhage_multitask_test",
-    group="UW",
+    project="hemorrhage_multitask_test_2",
+    group="no_ponderation",
     tags=tags,
     config=config_l,
-    name="multitask_unet3d_libMTL_UW"
+    name="multitask_unet3d_libMTL_seg_only"
 )
 
 
@@ -670,12 +796,12 @@ from LibMTL.trainer import Trainer
 
 hemorrhage_trainer = Trainer(
     task_dict=task_dict,
-    weighting= 'UW', 
+    weighting= 'EW', 
     architecture='Unet_hemo',
     #save_path=SAVE_DIR, à ajouter 
     encoder_class=HemorrhageEncoder,
     decoders=decoders,
-    rep_grad=False,
+    rep_grad=True,
     multi_input=True,
     optim_param=optim_param,
     scheduler_param=scheduler_param,
