@@ -3,13 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import cvxpy as cp
-
+from tqdm import tqdm
 from LibMTL._record import _PerformanceMeter
 from LibMTL.utils import count_parameters, set_param
 import LibMTL.weighting as weighting_method
 import LibMTL.architecture as architecture_method
 import wandb
 from monai.inferers import sliding_window_inference
+from transformers import get_linear_schedule_with_warmup
 
 class Trainer(nn.Module):
     r'''A Multi-Task Learning Trainer.
@@ -141,28 +142,54 @@ class Trainer(nn.Module):
                 'step': torch.optim.lr_scheduler.StepLR,
                 'cos': torch.optim.lr_scheduler.CosineAnnealingLR,
                 'reduce': torch.optim.lr_scheduler.ReduceLROnPlateau,
+                # --- AJOUT DU SCHEDULER WARMUP ---
+                'linearschedulewithwarmup': get_linear_schedule_with_warmup 
             }
         optim_arg = {k: v for k, v in optim_param.items() if k != 'optim'}
         self.optimizer = optim_dict[optim_param['optim']](self.model.parameters(), **optim_arg)
         if scheduler_param is not None:
             scheduler_arg = {k: v for k, v in scheduler_param.items() if k != 'scheduler'}
-            self.scheduler = scheduler_dict[scheduler_param['scheduler']](self.optimizer, **scheduler_arg)
+            
+            ##------- Ajout perso : scheduler warmup -------##
+            if scheduler_param['scheduler'].lower() == 'linearschedulewithwarmup':
+                scheduler_arg['optimizer'] = self.optimizer
+                self.scheduler = scheduler_dict[scheduler_param['scheduler'].lower()](**scheduler_arg)
+            else:
+                self.scheduler = scheduler_dict[scheduler_param['scheduler']](self.optimizer, **scheduler_arg)
         else:
             self.scheduler = None
 
+    # def _process_data(self, loader):
+    #     try:
+    #         data, label = next(loader[1])
+    #     except:
+    #         loader[1] = iter(loader[0])
+    #         data, label = next(loader[1])
+    #     data = data.to(self.device, non_blocking=True)
+    #     if not self.multi_input:
+    #         for task in self.task_name:
+    #             label[task] = label[task].to(self.device, non_blocking=True)
+    #     else:
+    #         label = label.to(self.device, non_blocking=True)
+    #     return data, label
+    
+    # ------------Ajout Perso : Gestion des dataloaders multi-input ------------
     def _process_data(self, loader):
         try:
-            data, label = next(loader[1])
-        except:
+            batch = next(loader[1])
+        except StopIteration:
             loader[1] = iter(loader[0])
-            data, label = next(loader[1])
-        data = data.to(self.device, non_blocking=True)
-        if not self.multi_input:
-            for task in self.task_name:
-                label[task] = label[task].to(self.device, non_blocking=True)
+            batch = next(loader[1])
+        if isinstance(batch, dict):
+            data = batch['image'].to(self.device, non_blocking=True)
+            label = batch['label'].to(self.device, non_blocking=True)
         else:
-            label = label.to(self.device, non_blocking=True)
+            data, label = batch
+            
+            
         return data, label
+    
+    ## ------------Fin Ajout Perso ------------
     
     def process_preds(self, preds, task_name=None):
         r'''The processing of prediction for each task. 
@@ -219,7 +246,7 @@ class Trainer(nn.Module):
         else:
             return losses
 
-    def train(self, train_dataloaders, test_dataloaders, epochs, 
+    def train(self, train_dataloaders,test_dataloaders,epochs,
               val_dataloaders=None, return_weight=False, **kwargs):
         if self.weighting in self.bilevel_methods:
             train_func = self.train_bilevel
@@ -228,8 +255,8 @@ class Trainer(nn.Module):
         train_func(train_dataloaders, test_dataloaders, epochs, 
             val_dataloaders, return_weight, **kwargs)
 
-    def train_singlelevel(self, train_dataloaders, epochs, 
-              val_dataloaders=None, return_weight=False, test_dataloaders= None):  # On rend le test_dataloaders optionnel
+    def train_singlelevel(self, train_dataloaders,test_dataloaders, epochs, 
+              val_dataloaders=None, return_weight=False, ):  # On rend le test_dataloaders optionnel
         r'''The training process of multi-task learning.
 
         Args:
@@ -253,7 +280,13 @@ class Trainer(nn.Module):
             self.model.epoch = epoch
             self.model.train()
             self.meter.record_time('begin')
-            for batch_index in range(train_batch):
+            
+            ## __ ____________Ajout perso -------------
+            pbar = tqdm(range(train_batch), desc=f"Epoch {epoch+1}/{epochs}", unit="batch", leave=False)
+            for batch_index in pbar:  # Remplacement de 'range(train_batch)' par 'pbar' pour affichage de la barre de progression
+             ## __ ____________Fin Ajout perso -------------
+             
+            #for batch_index in range(train_batch):
                 train_losses = []
                 for sample_num in range(3 if self.weighting in ['MoDo', 'SDMGrad'] else 1):
                     if not self.multi_input:
@@ -267,6 +300,11 @@ class Trainer(nn.Module):
                     train_losses_, train_preds = self.forward4loss(self.model, train_inputs, train_gts, return_preds=True)
                     train_losses.append(train_losses_)
                 train_losses = torch.stack(train_losses).squeeze(0)
+                
+                # --- Mise à jour de la barre TQDM avec la loss courante ---
+                current_loss = train_losses.sum().item()
+                pbar.set_postfix({'loss': f"{current_loss:.4f}"})
+                ## ------------Fin ajout perso -------------
 
                 if not self.multi_input:
                     self.meter.update(train_preds, train_gts)
@@ -284,6 +322,8 @@ class Trainer(nn.Module):
                     with torch.no_grad():
                         new_train_losses = self.forward4loss(self.model, train_inputs, train_gts, return_preds=False)
                         self.model.update_w(new_train_losses.detach())
+            
+            pbar.close()
             
             self.meter.record_time('end')
             self.meter.get_score()
@@ -309,7 +349,7 @@ class Trainer(nn.Module):
 
                 
                 
-            log_dict["train/total_loss"] = total_epoch_loss
+            log_dict["train_loss_epoch"] = total_epoch_loss
             wandb.log(log_dict)
             ## ------------Fin ajout perso-------------
             
@@ -319,24 +359,7 @@ class Trainer(nn.Module):
             if val_dataloaders is not None:
                 self.meter.has_val = True
                 val_improvement = self.test(val_dataloaders, epoch, mode='val', return_improvement=True)
-                ##-------------Ajout perso -------------
-                total_val_loss = 0.0
-                for tn, task in enumerate(self.task_name):
-                    # Loss
-                    v_loss = self.meter.loss_item[tn]
-                    log_dict[f"val/{task}_loss"] = v_loss
-                    total_val_loss += v_loss
-                    
-                    # Métriques (Acc, Dice...)
-                    metric_names = self.meter.task_dict[task]['metrics']
-                    metric_values = self.meter.results[task]
-                    for m_name, m_val in zip(metric_names, metric_values):
-                        log_dict[f"val/{task}_{m_name}"] = m_val
-                
-                log_dict["val/total_loss"] = total_val_loss
-                wandb.log(log_dict)
-                ##------------Fin ajout perso-------------
-         
+               
         ## ------------Ajout perso -------------       
         if test_dataloaders is not None:   
             ##------- Fin ajout perso-------------  
@@ -353,57 +376,201 @@ class Trainer(nn.Module):
         if return_weight:
             return self.batch_weight
 
-
-    def test(self, test_dataloaders, epoch=None, mode='test', return_improvement=False):
-        r'''The test process of multi-task learning.
-
-        Args:
-            test_dataloaders (dict or torch.utils.data.DataLoader): If ``multi_input`` is ``True``, \
-                            it is a dictionary of name-dataloader pairs. Otherwise, it is a single \
-                            dataloader which returns data and a dictionary of name-label pairs in each iteration.
-            epoch (int, default=None): The current epoch. 
-        '''
+    def test(self, test_dataloaders, epoch=None, mode='test', return_improvement=False): #modifier pour adapter logging
+        r'''The test process of multi-task learning.'''
         test_loader, test_batch = self._prepare_dataloaders(test_dataloaders)
         
         self.model.eval()
         self.meter.record_time('begin')
+        
+        # 1. On prépare des compteurs pour calculer la moyenne de la loss
+        total_losses = {task: 0.0 for task in self.task_name}
+        batch_counts = {task: 0 for task in self.task_name}
+
         with torch.no_grad():
             if not self.multi_input:
-                for batch_index in range(test_batch):
-                    test_inputs, test_gts = self._process_data(test_loader)
-                    test_preds = self.model(test_inputs)
-                    test_preds = self.process_preds(test_preds)
-                    test_losses = self._compute_loss(test_preds, test_gts)
-                    self.meter.update(test_preds, test_gts)
+                # ... (code single input inchangé) ...
+                pass
             else:
                 for tn, task in enumerate(self.task_name):
                     for batch_index in range(test_batch[tn]):
                         test_input, test_gt = self._process_data(test_loader[task])
-                        ## ---Ajout perso : inference par sliding window ---
-                        if task == "segmentation":
+                        
+                        # --- INFERENCE (Ta version corrigée) ---
+                        if task == 'segmentation':
+                            from monai.inferers import sliding_window_inference
+                            # Correction du nom d'argument (task_name)
+                            predictor_func = lambda x: self.model(x, task_name=task)[task]
                             test_pred = sliding_window_inference(
-                                inputs=test_input,
-                                roi_size=(96, 96, 96),
-                                sw_batch_size=2,
-                                predictor=lambda x: self.model(x, task=task)[task],
-                                overlap=0.25,
+                                inputs=test_input, roi_size=(96, 96, 96), sw_batch_size=2,
+                                overlap=0.25, predictor=predictor_func, device=self.device,mode= "gaussian"
                             )
                         else:
-                            
-                            test_pred = self.model(test_input, task)
-                            test_pred = test_pred[task]
-                        ## --------Fin ajout perso ----------
+                            test_pred = self.model(test_input, task_name=task)[task]
                         
-                        test_pred = self.process_preds(test_pred)
-                        test_loss = self._compute_loss(test_pred, test_gt, task)
+                        test_pred = self.process_preds(test_pred, task)
+                        
+                        # --- 2. CALCUL DE LA LOSS (Ajout) ---
+                        # On force le calcul de la loss pour pouvoir la logger
+                        loss_val = self._compute_loss(test_pred, test_gt, task)
+                        
+                        # On accumule (attention compute_loss renvoie parfois un tenseur)
+                        if isinstance(loss_val, torch.Tensor):
+                            loss_val = loss_val.item()
+                        total_losses[task] += loss_val
+                        batch_counts[task] += 1
+
                         self.meter.update(test_pred, test_gt, task)
+                        
         self.meter.record_time('end')
-        self.meter.get_score()
+        self.meter.get_score() # Calcule Dice et AUC finaux
+        
+        # --- 3. LOGGING WANDB  --- à modifier une fois que comparaison finie 
+        if epoch is not None:
+            log_dict = {"epoch": epoch}
+            global_val_loss = 0.0
+            
+            # Pour chaque tâche (segmentation, classification)
+            for task in self.task_name:
+                # A. Log de la Loss Moyenne
+                if batch_counts[task] > 0:
+                    avg_loss = total_losses[task] / batch_counts[task]
+                else:
+                    avg_loss = 0.0
+                global_val_loss += avg_loss
+                
+                if task == 'classification': 
+                    log_dict["val_cls_loss"] = avg_loss
+                  
+                elif task == 'segmentation':
+                    log_dict["val_seg_loss"] = avg_loss
+                  
+                else:
+                    # Pour les futurs datasets (ex: 'seg_dataset_B'), on utilise le nom complet
+                    log_dict[f"{mode}/{task}_loss"] = avg_loss
+                    
+                
+                
+                # B. Log des Métriques (Dice, AUC...)
+                # self.meter.results contient les résultats AVANT effacement
+                metric_names = self.meter.task_dict[task]['metrics']
+                metric_values = self.meter.results[task]
+                
+                for i, (m_name, m_val) in enumerate(zip(metric_names, metric_values)):
+                    
+                    key_name = ""
+                
+                   
+                    if task == 'classification':
+                        if "mean" in m_name:
+                            key_name = "val_mean_auc"
+                        else:
+                            # Génère : val_auc_class_0, val_auc_class_1...
+                            key_name = f"val_auc_class_{i}" 
+                                                
+                    elif task == 'segmentation':
+                        if "Mean" in m_name:
+                            key_name = "val_mean_dice"
+                        else:
+                            # Génère : val_dice_c1, val_dice_c2... (Note le i+1)
+                            key_name = f"dice_c{i+1}"                   
+
+                    else:
+                        key_name = f"{mode}/{task}_{m_name}"
+                    
+                    
+                    log_dict[key_name] = m_val
+
+            # Total loss
+            log_dict[f"val_loss"] = global_val_loss
+                    
+
+            import wandb
+            wandb.log(log_dict)
+        # -----------------------------------------------------
+
         self.meter.display(epoch=epoch, mode=mode)
-        improvement = self.meter.improvement
+        # improvement = self.meter.improvement
+        
+        ##__Ajout Perso : Calcul de l'amélioration basée sur la loss moyenne
+        improvement = 0.0
+        count = 0
+        for task in self.task_name:
+            # 1. On récupère les poids et les résultats
+            w = self.meter.task_dict[task]['weight']
+            res = self.meter.results[task]
+            
+            # 2. On applique la pondération (si weight=1 -> on maximise, si weight=0 -> on minimise)
+            # Cela crée un vecteur (taille 7 pour classif, taille 6 pour seg)
+            task_vector = ((-1)**np.array(w)) * np.array(res)
+            
+            # 3. LA CORRECTION : On fait la MOYENNE pour n'avoir qu'un seul chiffre par tâche
+            improvement += task_vector.mean()
+            count += 1
+        
+        # On fait la moyenne des tâches
+        improvement = improvement / count
+        
+        # C'est ICI que tout est effacé ! D'où l'importance d'avoir loggé avant.
         self.meter.reinit()
+        
         if return_improvement:
             return improvement
+    # def test(self, test_dataloaders, epoch=None, mode='test', return_improvement=False):
+    #     r'''The test process of multi-task learning.
+
+    #     Args:
+    #         test_dataloaders (dict or torch.utils.data.DataLoader): If ``multi_input`` is ``True``, \
+    #                         it is a dictionary of name-dataloader pairs. Otherwise, it is a single \
+    #                         dataloader which returns data and a dictionary of name-label pairs in each iteration.
+    #         epoch (int, default=None): The current epoch. 
+    #     '''
+    #     test_loader, test_batch = self._prepare_dataloaders(test_dataloaders)
+        
+    #     self.model.eval()
+    #     self.meter.record_time('begin')
+    #     ##__Ajout  Perso
+    #     total_losses = {task: 0.0 for task in self.task_name}
+    #     batch_counts = {task: 0 for task in self.task_name}
+        
+                
+    #     with torch.no_grad():
+    #         if not self.multi_input:
+    #             for batch_index in range(test_batch):
+    #                 test_inputs, test_gts = self._process_data(test_loader)
+    #                 test_preds = self.model(test_inputs)
+    #                 test_preds = self.process_preds(test_preds)
+    #                 test_losses = self._compute_loss(test_preds, test_gts)
+    #                 self.meter.update(test_preds, test_gts)
+    #         else:
+    #             for tn, task in enumerate(self.task_name):
+    #                 for batch_index in range(test_batch[tn]):
+    #                     test_input, test_gt = self._process_data(test_loader[task])
+    #                     ## ---Ajout perso : inference par sliding window ---
+    #                     if task == "segmentation":
+    #                         test_pred = sliding_window_inference(
+    #                             inputs=test_input,
+    #                             roi_size=(96, 96, 96),
+    #                             sw_batch_size=2,
+    #                             predictor=lambda x: self.model(x,task)[task],
+    #                             overlap=0.25,
+    #                         )
+    #                     else:
+                            
+    #                         test_pred = self.model(test_input, task)
+    #                         test_pred = test_pred[task]
+    #                     ## --------Fin ajout perso ----------
+                        
+    #                     test_pred = self.process_preds(test_pred)
+    #                     test_loss = self._compute_loss(test_pred, test_gt, task)
+    #                     self.meter.update(test_pred, test_gt, task)
+    #     self.meter.record_time('end')
+    #     self.meter.get_score()
+    #     self.meter.display(epoch=epoch, mode=mode)
+    #     improvement = self.meter.improvement
+    #     self.meter.reinit()
+    #     if return_improvement:
+    #         return improvement
 
 
     ### for bilevel methods
